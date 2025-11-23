@@ -23,11 +23,18 @@ pub struct OptimizationConfig {
     pub(crate) inlining_strategy: InliningStrategy,
     /// Should const folding be skipped.
     pub(crate) skip_const_folding: bool,
+    /// Whether to enable the local_into_box optimization.
+    pub(crate) enable_local_into_box: bool,
 }
 
 impl OptimizationConfig {
     pub fn with_skip_const_folding(mut self, skip_const_folding: bool) -> Self {
         self.skip_const_folding = skip_const_folding;
+        self
+    }
+
+    pub fn with_local_into_box(mut self, local_into_box: bool) -> Self {
+        self.enable_local_into_box = local_into_box;
         self
     }
 }
@@ -40,6 +47,7 @@ impl Optimizations {
             moveable_functions: default_moveable_functions(),
             inlining_strategy,
             skip_const_folding: false,
+            enable_local_into_box: false,
         })
     }
 
@@ -50,6 +58,7 @@ impl Optimizations {
             moveable_functions: vec!["felt252_sub".to_string()],
             inlining_strategy: Default::default(),
             skip_const_folding: false,
+            enable_local_into_box: false,
         })
     }
 
@@ -72,6 +81,19 @@ impl Optimizations {
     /// Whether to skip const folding. If `self` is [`Optimizations::Disabled`] returns `true`.
     pub fn skip_const_folding(&self) -> bool {
         if let Self::Enabled(config) = self { config.skip_const_folding } else { true }
+    }
+
+    /// Whether to enable the local_into_box optimization. If `self` is [`Optimizations::Disabled`]
+    /// returns `false`.
+    pub fn enable_local_into_box(&self) -> bool {
+        if let Self::Enabled(config) = self { config.enable_local_into_box } else { false }
+    }
+
+    pub fn with_local_into_box(self, local_into_box: bool) -> Self {
+        match self {
+            Self::Enabled(config) => Self::Enabled(config.with_local_into_box(local_into_box)),
+            Self::Disabled => self,
+        }
     }
 }
 

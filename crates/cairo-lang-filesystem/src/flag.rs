@@ -20,10 +20,18 @@ pub enum Flag {
     ///
     /// Default is false as it makes panic unprovable.
     UnsafePanic(bool),
+    /// Whether to enable the optimization that lowers `into_box` to `local_into_box`.
+    LocalIntoBoxOptimization(bool),
 }
 
 /// Returns the value of the `unsafe_panic` flag, or `false` if the flag is not set.
 pub fn flag_unsafe_panic(db: &dyn salsa::Database) -> bool {
     let flag = FlagId::new(db, FlagLongId("unsafe_panic".into()));
     if let Some(flag) = db.get_flag(flag) { *flag == Flag::UnsafePanic(true) } else { false }
+}
+
+/// Returns whether the `local_into_box` optimization flag is set.
+pub fn flag_local_into_box_optimization(db: &dyn salsa::Database) -> bool {
+    let id = FlagId::new(db, FlagLongId("local_into_box_optimization".into()));
+    db.get_flag(id) == Some(&Flag::LocalIntoBoxOptimization(true))
 }

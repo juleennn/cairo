@@ -5,6 +5,7 @@ use cairo_lang_defs::ids::{
     ExternFunctionId, LanguageElementId, ModuleId, ModuleItemId, NamedLanguageElementLongId,
 };
 use cairo_lang_diagnostics::{Diagnostics, DiagnosticsBuilder, Maybe, MaybeAsRef};
+use cairo_lang_filesystem::flag::flag_local_into_box_optimization;
 use cairo_lang_filesystem::ids::{FileId, Tracked};
 use cairo_lang_semantic::items::enm::SemanticEnumEx;
 use cairo_lang_semantic::items::imp::ImplSemantic;
@@ -397,6 +398,7 @@ pub fn init_lowering_group(
     optimizations: Optimizations,
     code_size_estimator: Option<CodeSizeEstimator>,
 ) {
+    let optimizations = optimizations.with_local_into_box(flag_local_into_box_optimization(db));
     lowering_group_input(db).set_optimizations(db).to(Some(optimizations));
     lowering_group_input(db).set_code_size_estimator(db).to(code_size_estimator);
 }

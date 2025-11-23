@@ -229,8 +229,12 @@ fn inner_apply_inlining<'db>(
             .into_iter(),
     ];
 
-    let mut const_folding_ctx =
-        ConstFoldingContext::new(db, calling_function_id, &mut lowered.variables);
+    let mut const_folding_ctx = ConstFoldingContext::new(
+        db,
+        calling_function_id,
+        &mut lowered.variables,
+        &lowered.parameters,
+    );
 
     enable_const_folding = enable_const_folding && !const_folding_ctx.should_skip_const_folding(db);
 

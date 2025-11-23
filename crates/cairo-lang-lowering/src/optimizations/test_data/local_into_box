@@ -1,0 +1,169 @@
+//! > Test local_into_box optimization for parameters
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > enable_local_into_box
+true
+
+//! > function
+fn foo(x: felt252) -> Box<felt252> {
+    BoxTrait::new(x)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > lowering_diagnostics
+
+//! > before
+Parameters: v0: core::felt252
+blk0 (root):
+Statements:
+  (v1: core::box::Box::<core::felt252>) <- core::box::local_into_box::<core::felt252>(v0)
+End:
+  Return(v1)
+
+//! > after
+Parameters: v0: core::felt252
+blk0 (root):
+Statements:
+  (v1: core::box::Box::<core::felt252>) <- core::box::local_into_box::<core::felt252>(v0)
+End:
+  Return(v1)
+
+//! > ==========================================================================
+
+//! > Test local_into_box optimization for local variables
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > enable_local_into_box
+true
+
+//! > function
+fn foo(a: felt252, b: felt252) -> Box<felt252> {
+    let c = a + b;
+    BoxTrait::new(c)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > lowering_diagnostics
+
+//! > before
+Parameters: v0: core::felt252, v1: core::felt252
+blk0 (root):
+Statements:
+  (v2: core::felt252) <- core::felt252_add(v0, v1)
+  (v3: core::box::Box::<core::felt252>) <- core::box::local_into_box::<core::felt252>(v2)
+End:
+  Return(v3)
+
+//! > after
+Parameters: v0: core::felt252, v1: core::felt252
+blk0 (root):
+Statements:
+  (v2: core::felt252) <- core::felt252_add(v0, v1)
+  (v3: core::box::Box::<core::felt252>) <- core::box::local_into_box::<core::felt252>(v2)
+End:
+  Return(v3)
+
+//! > ==========================================================================
+
+//! > Test local_into_box optimization for struct
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > enable_local_into_box
+true
+
+//! > function
+fn foo() -> Box<Point> {
+    let p = Point { x: 1, y: 2 };
+    BoxTrait::new(p)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+#[derive(Copy, Drop)]
+struct Point {
+    x: felt252,
+    y: felt252,
+}
+
+//! > semantic_diagnostics
+
+//! > lowering_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::felt252) <- 2
+  (v2: test::Point) <- struct_construct(v0, v1)
+  (v3: core::box::Box::<test::Point>) <- core::box::local_into_box::<test::Point>(v2)
+End:
+  Return(v3)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::felt252) <- 2
+  (v2: test::Point) <- struct_construct(v0, v1)
+  (v3: core::box::Box::<test::Point>) <- core::box::local_into_box::<test::Point>(v2)
+End:
+  Return(v3)
+
+//! > ==========================================================================
+
+//! > Test NO local_into_box optimization without flag
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo(x: felt252) -> Box<felt252> {
+    BoxTrait::new(x)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > lowering_diagnostics
+
+//! > before
+Parameters: v0: core::felt252
+blk0 (root):
+Statements:
+  (v1: core::box::Box::<core::felt252>) <- core::box::into_box::<core::felt252>(v0)
+End:
+  Return(v1)
+
+//! > after
+Parameters: v0: core::felt252
+blk0 (root):
+Statements:
+  (v1: core::box::Box::<core::felt252>) <- core::box::into_box::<core::felt252>(v0)
+End:
+  Return(v1)

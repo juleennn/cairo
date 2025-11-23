@@ -33,6 +33,7 @@ fn test_specialized_function(
             moveable_functions: vec![],
             inlining_strategy: InliningStrategy::InlineSmallFunctions(0),
             skip_const_folding: false,
+            enable_local_into_box: false,
         },
     )));
     let (test_function, semantic_diagnostics) = setup_test_function(

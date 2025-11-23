@@ -24,6 +24,7 @@ use cairo_lang_utils::byte_array::BYTE_ARRAY_MAGIC;
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::ordered_hash_set::OrderedHashSet;
 use cairo_lang_utils::unordered_hash_map::UnorderedHashMap;
+use cairo_lang_utils::unordered_hash_set::UnorderedHashSet;
 use cairo_lang_utils::{Intern, extract_matches, try_extract_matches};
 use itertools::{chain, zip_eq};
 use num_bigint::BigInt;
@@ -111,7 +112,8 @@ pub fn const_folding<'db>(
 
     // Note that we can keep the var_info across blocks because the lowering
     // is in static single assignment form.
-    let mut ctx = ConstFoldingContext::new(db, function_id, &mut lowered.variables);
+    let mut ctx =
+        ConstFoldingContext::new(db, function_id, &mut lowered.variables, &lowered.parameters);
 
     if ctx.should_skip_const_folding(db) {
         return;
@@ -148,6 +150,10 @@ pub struct ConstFoldingContext<'db, 'mt> {
     reachability: UnorderedHashMap<BlockId, Reachability>,
     /// Additional statements to add to the block.
     additional_stmts: Vec<Statement<'db>>,
+    /// Whether the local-into-box optimization flag is enabled.
+    enable_local_into_box_optimization: bool,
+    /// Variables that are known to be locals (parameters and locally created).
+    local_variables: UnorderedHashSet<VariableId>,
 }
 
 impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
@@ -155,6 +161,7 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
         db: &'db dyn Database,
         function_id: ConcreteFunctionWithBodyId<'db>,
         variables: &'mt mut VariableArena<'db>,
+        parameters: &[VariableId],
     ) -> Self {
         let caller_base = match function_id.long(db) {
             ConcreteFunctionWithBodyLongId::Specialized(specialized_func) => specialized_func.base,
@@ -169,6 +176,8 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
             caller_base,
             reachability: UnorderedHashMap::from_iter([(BlockId::root(), Reachability::Any)]),
             additional_stmts: vec![],
+            enable_local_into_box_optimization: db.optimizations().enable_local_into_box(),
+            local_variables: UnorderedHashSet::from_iter(parameters.iter().copied()),
         }
     }
 
@@ -213,33 +222,60 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
     pub fn visit_statement(&mut self, stmt: &mut Statement<'db>) {
         self.maybe_replace_inputs(stmt.inputs_mut());
         match stmt {
-            Statement::Const(StatementConst { value, output, boxed }) if *boxed => {
+            Statement::Const(StatementConst { value, output, boxed: true }) => {
                 self.var_info.insert(*output, VarInfo::Box(VarInfo::Const(*value).into()));
             }
-            Statement::Const(StatementConst { value, output, .. }) => match value.long(self.db) {
-                ConstValue::Int(..)
-                | ConstValue::Struct(..)
-                | ConstValue::Enum(..)
-                | ConstValue::NonZero(..) => {
-                    self.var_info.insert(*output, VarInfo::Const(*value));
+            Statement::Const(StatementConst { value, output, boxed: false }) => {
+                self.local_variables.insert(*output);
+
+                match value.long(self.db) {
+                    ConstValue::Int(..)
+                    | ConstValue::Struct(..)
+                    | ConstValue::Enum(..)
+                    | ConstValue::NonZero(..) => {
+                        self.var_info.insert(*output, VarInfo::Const(*value));
+                    }
+                    ConstValue::Generic(_)
+                    | ConstValue::ImplConstant(_)
+                    | ConstValue::Var(..)
+                    | ConstValue::Missing(_) => {}
                 }
-                ConstValue::Generic(_)
-                | ConstValue::ImplConstant(_)
-                | ConstValue::Var(..)
-                | ConstValue::Missing(_) => {}
-            },
+            }
             Statement::Snapshot(stmt) => {
+                if self.local_variables.contains(&stmt.input.var_id) {
+                    self.local_variables.insert(stmt.original());
+                    self.local_variables.insert(stmt.snapshot());
+                }
+
                 if let Some(info) = self.var_info.get(&stmt.input.var_id).cloned() {
                     self.var_info.insert(stmt.original(), info.clone());
                     self.var_info.insert(stmt.snapshot(), VarInfo::Snapshot(info.into()));
                 }
             }
             Statement::Desnap(StatementDesnap { input, output }) => {
+                if self.local_variables.contains(&input.var_id) {
+                    self.local_variables.insert(*output);
+                }
+
                 if let Some(VarInfo::Snapshot(info)) = self.var_info.get(&input.var_id) {
                     self.var_info.insert(*output, info.as_ref().clone());
                 }
             }
             Statement::Call(call_stmt) => {
+                // Track outputs from calls that produce locals
+                if let Some((extern_id, _)) = call_stmt.function.get_extern(self.db) {
+                    // Check if this is an arithmetic operation or similar that produces a local
+                    if self.libfunc_info.is_local_producing_extern(extern_id) {
+                        for output in &call_stmt.outputs {
+                            self.local_variables.insert(*output);
+                        }
+                    }
+                } else {
+                    // Non-extern function calls (regular functions)
+                    // Their outputs ARE locals - they return values on the stack
+                    self.local_variables.extend(call_stmt.outputs.iter().copied());
+                }
+
                 if let Some(updated_stmt) = self.handle_statement_call(call_stmt) {
                     *stmt = updated_stmt;
                 } else if let Some(updated_stmt) = self.try_specialize_call(call_stmt) {
@@ -247,6 +283,8 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
                 }
             }
             Statement::StructConstruct(StatementStructConstruct { inputs, output }) => {
+                self.local_variables.insert(*output);
+
                 let mut const_args = vec![];
                 let mut all_args = vec![];
                 let mut contains_info = false;
@@ -270,6 +308,10 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
                 }
             }
             Statement::StructDestructure(StatementStructDestructure { input, outputs }) => {
+                if self.local_variables.contains(&input.var_id) {
+                    self.local_variables.extend(outputs.iter().copied());
+                }
+
                 if let Some(info) = self.var_info.get(&input.var_id) {
                     let (n_snapshots, info) = info.peel_snapshots();
                     match info {
@@ -297,6 +339,10 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
                 }
             }
             Statement::EnumConstruct(StatementEnumConstruct { variant, input, output }) => {
+                // Track enum constructions as locals
+                self.local_variables.insert(*output);
+
+                // Handle const folding logic
                 let value = if let Some(info) = self.var_info.get(&input.var_id) {
                     if let VarInfo::Const(val) = info {
                         VarInfo::Const(ConstValue::Enum(*variant, *val).intern(self.db))
@@ -464,7 +510,7 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
                 output: stmt.outputs[0],
             }));
         }
-        let (id, _generic_args) = stmt.function.get_extern(db)?;
+        let (id, generic_args) = stmt.function.get_extern(db)?;
         if id == self.felt_sub {
             if let Some(rhs) = self.as_int(stmt.inputs[1].var_id)
                 && rhs.is_zero()
@@ -595,18 +641,10 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
             }
             None
         } else if id == self.into_box {
-            let input = stmt.inputs[0];
-            let var_info = self.var_info.get(&input.var_id);
-            let const_value = match var_info {
-                Some(VarInfo::Const(val)) => Some(*val),
-                Some(VarInfo::Snapshot(info)) => {
-                    try_extract_matches!(info.as_ref(), VarInfo::Const).copied()
-                }
-                _ => None,
-            };
-            let var_info = var_info.cloned().or_else(|| var_info_if_copy(self.variables, input))?;
-            self.var_info.insert(stmt.outputs[0], VarInfo::Box(var_info.into()));
-            Some(Statement::Const(StatementConst::new_boxed(const_value?, stmt.outputs[0])))
+            self.try_fold_into_box_const(stmt).or_else(|| {
+                self.try_convert_to_local_into_box(stmt, &generic_args);
+                None
+            })
         } else if id == self.unbox {
             if let VarInfo::Box(inner) = self.var_info.get(&stmt.inputs[0].var_id)? {
                 let inner = inner.as_ref().clone();
@@ -651,6 +689,47 @@ impl<'db, 'mt> ConstFoldingContext<'db, 'mt> {
         } else {
             None
         }
+    }
+
+    fn try_fold_into_box_const(&mut self, stmt: &StatementCall<'db>) -> Option<Statement<'db>> {
+        let input = stmt.inputs[0];
+        let var_info = self.var_info.get(&input.var_id);
+        let const_value = match var_info {
+            Some(VarInfo::Const(val)) => Some(*val),
+            Some(VarInfo::Snapshot(info)) => {
+                try_extract_matches!(info.as_ref(), VarInfo::Const).copied()
+            }
+            _ => None,
+        }?;
+        let var_info = var_info.cloned().or_else(|| var_info_if_copy(self.variables, input))?;
+        self.var_info.insert(stmt.outputs[0], VarInfo::Box(var_info.into()));
+        Some(Statement::Const(StatementConst::new_boxed(const_value, stmt.outputs[0])))
+    }
+
+    fn try_convert_to_local_into_box(
+        &mut self,
+        stmt: &mut StatementCall<'db>,
+        generic_args: &[GenericArgumentId<'db>],
+    ) {
+        if !self.can_use_local_into_box(stmt.inputs[0].var_id) {
+            return;
+        }
+
+        // TODO(giladchase): gotta be a better way.
+        stmt.function = GenericFunctionId::Extern(self.local_into_box)
+            .concretize(self.db, generic_args.to_vec())
+            .lowered(self.db);
+    }
+
+    fn can_use_local_into_box(&self, mut var_id: VariableId) -> bool {
+        if !self.enable_local_into_box_optimization {
+            return false;
+        }
+        // TODO(giladchase): track source var instead of this linear lookup.
+        while let Some(VarInfo::Var(var_usage)) = self.var_info.get(&var_id) {
+            var_id = var_usage.var_id;
+        }
+        self.local_variables.contains(&var_id)
     }
 
     /// Tries to specialize the call.
@@ -1388,6 +1467,8 @@ pub struct ConstFoldingLibfuncInfo<'db> {
     felt_div: ExternFunctionId<'db>,
     /// The `into_box` libfunc.
     into_box: ExternFunctionId<'db>,
+    /// The `local_into_box` libfunc.
+    local_into_box: ExternFunctionId<'db>,
     /// The `unbox` libfunc.
     unbox: ExternFunctionId<'db>,
     /// The `box_forward_snapshot` libfunc.
@@ -1543,6 +1624,7 @@ impl<'db> ConstFoldingLibfuncInfo<'db> {
             felt_mul: core.extern_function_id("felt252_mul"),
             felt_div: core.extern_function_id("felt252_div"),
             into_box: box_module.extern_function_id("into_box"),
+            local_into_box: box_module.extern_function_id("local_into_box"),
             unbox: box_module.extern_function_id("unbox"),
             box_forward_snapshot: box_module.generic_function_id("box_forward_snapshot"),
             eq_fns,
@@ -1576,6 +1658,28 @@ impl<'db> ConstFoldingLibfuncInfo<'db> {
             type_info,
             const_calculation_info: db.const_calc_info(),
         }
+    }
+}
+
+impl<'db> ConstFoldingLibfuncInfo<'db> {
+    // TODO(giladchase): find a better way, this WILL go stale. Worst case add a regression test.
+    fn is_local_producing_extern(&self, extern_id: ExternFunctionId<'db>) -> bool {
+        extern_id == self.felt_add
+            || extern_id == self.felt_sub
+            || extern_id == self.felt_mul
+            || extern_id == self.felt_div
+            || self.wide_mul_fns.contains(&extern_id)
+            || self.uadd_fns.contains(&extern_id)
+            || self.usub_fns.contains(&extern_id)
+            || self.iadd_fns.contains(&extern_id)
+            || self.isub_fns.contains(&extern_id)
+            || self.diff_fns.contains(&extern_id)
+            || self.div_rem_fns.contains(&extern_id)
+            || self.upcast_fns.contains(&extern_id)
+            || self.downcast_fns.contains_key(&extern_id)
+            || extern_id == self.bounded_int_add
+            || extern_id == self.bounded_int_sub
+            || extern_id == self.array_new
     }
 }
 

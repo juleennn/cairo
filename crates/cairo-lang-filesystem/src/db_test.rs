@@ -45,6 +45,17 @@ fn test_flags() {
 
     assert_eq!(*db.get_flag(id).unwrap(), Flag::AddWithdrawGas(false));
     assert!(db.get_flag(FlagId::new(&db, FlagLongId("non_existing_flag".into()))).is_none());
+
+    let local_into_box_flag_id = FlagLongId("local_into_box_optimization".into());
+    db.set_flag(
+        local_into_box_flag_id.clone(),
+        Some(Arc::new(Flag::LocalIntoBoxOptimization(true))),
+    );
+    let id = local_into_box_flag_id.intern(&db);
+    assert_eq!(
+        *db.get_flag(id).unwrap(),
+        Flag::LocalIntoBoxOptimization(true)
+    );
 }
 
 #[test]
