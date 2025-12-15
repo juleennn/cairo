@@ -275,8 +275,8 @@ impl EntryCodeConfig {
     }
 
     /// Returns a configuration for execution purposes.
-    pub fn executable(allow_unsound: bool) -> Self {
-        Self { testing: false, allow_unsound, builtin_list: None }
+    pub fn executable(allow_unsound: bool, builtin_list: Option<Vec<BuiltinName>>) -> Self {
+        Self { testing: false, allow_unsound, builtin_list }
     }
 }
 
@@ -517,6 +517,7 @@ impl EntryCodeHelper {
         } else {
             &return_types[..(return_types.len() - 1)]
         };
+        eprint!("non_proof_return_types: {:?}", non_proof_return_types);
         for (ret_ty, size) in non_proof_return_types {
             if let Some(name) = self.builtin_ty_to_vm_name.get(ret_ty) {
                 self.output_builtin_vars.insert(*name, self.ctx.add_var(next_unprocessed_deref()));
@@ -559,6 +560,8 @@ impl EntryCodeHelper {
             self.output_builtin_vars.insert(BuiltinName::output, ptr_end);
         }
         assert_eq!(unprocessed_return_size, 0);
+        eprintln!("output_builtin_vars: {:?}", self.output_builtin_vars);
+        eprintln!("input_builtin_vars: {:?}", self.input_builtin_vars);
         assert_eq!(self.input_builtin_vars.len(), self.output_builtin_vars.len());
         if self.has_post_calculation_loop {
             // Storing local data on FP - as we have a loop now.
